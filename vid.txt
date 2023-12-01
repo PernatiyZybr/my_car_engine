@@ -1,3 +1,3 @@
 cd res/
- ffmpeg -f image2 -framerate 30  -start_number 1 -i result_%03d.jpg -s 1920x1080  -b:v 10000k ../res_avi/res.avi
+ ffmpeg -f image2 -framerate 40  -start_number 1 -i result_%03d.jpg -s 1920x1080  -b:v 10000k ../res_avi/res.avi
 cd ..
