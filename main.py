@@ -3,11 +3,12 @@ import numpy as np
 from PIL import Image, ImageDraw
 from tiny_functions import *
 SCREEN_SIZE = (1920, 1080)
-NEWSIE = (350, 350)
 ICON_SIZE = (100, 100)
+NEWSIE = (350, 350)
 RADIUS = 10
 
 class Object:
+    """Подвижный объект в численном интегрировании"""
     def __init__(self, im: Image, icon: Image, center: list, front_and_back: list, color_point: str = 'white',
                  x_m: float = 0, y_m: float = 0, vx: float = 0, vy: float = 0, name: str = ""):
         self.im = im
@@ -19,8 +20,10 @@ class Object:
 
         # Коэффициенты ПД-регулятора
         self.k = None
-        self.v_1_past = None
-        self.x_safe = 2.5
+        self.x_1_past = None
+        self.x_2_past = None
+        self.a_1_past = None
+        self.x_safe = 3.
 
         self.y_list = [y_m]
         self.front_list = [y_m + front_and_back[0]]
@@ -43,8 +46,10 @@ class Object:
         return np.array([self.vx_kmh, self.vy_kmh]) / 3.6 * h
 
     def process(self, dt: float, a: any = (0., 0.)):
+        """Интегрирование движения схемой 'Уголок'"""
         self.vx_kmh += a[0] * dt
         self.vy_kmh += a[1] * dt
+        self.vy_kmh = clip(self.vy_kmh, 0, 1e10)
         self.x_m += self.vx_kmh / 3.6 * dt
         self.y_m += self.vy_kmh / 3.6 * dt
         self.y_list += [self.y_m]
@@ -52,6 +57,7 @@ class Object:
         self.back_list += [self.y_m + self.front_and_back[1]]
 
     def add_to_draw(self, im: Image, draw: ImageDraw, x_vec, y_vec, y_past: float, d: int):
+        """Добавление объекта на картинку"""
         w, h = SCREEN_SIZE
         x, y = self.meter2pixel(d, x_vec, y_vec, y_past)
         x_screen = int(w//2) - self.center[0]
@@ -65,9 +71,10 @@ class Object:
                          fill=self.color_point, outline=(0, 0, 0))
 
 class FrontCar(Object):
+    """Единичный объект с заданным управлением"""
     def new_process(self, dt: float, t: float, v0):
         self.vx_kmh = 0.
-        self.vy_kmh = v0 + 1 * np.sin(t / 5.)
+        self.vy_kmh = v0 + v0 * np.sin(t / 5.)
         self.x_m += self.vx_kmh / 3.6 * dt
         self.y_m += self.vy_kmh / 3.6 * dt
         self.y_list += [self.y_m]
@@ -75,26 +82,32 @@ class FrontCar(Object):
         self.back_list += [self.y_m + self.front_and_back[1]]
 
 class MyCar(Object):
-    def get_acceleration(self, obj: any, a_max: float = 1e20, dt: float = 0.5):
-        v_diff = (self.vy_kmh - obj.vy_kmh)  # + 0.5 * abs(obj.vy_kmh)
-        safe_distance = self.x_safe + 1e1 * abs(v_diff)
-        x_diff = - ((obj.y_m + obj.front_and_back[1]) - (self.y_m + self.front_and_back[0]) - safe_distance)
-        if self.k is None:
-            print(x_diff, v_diff)
-            if self.v_1_past is None:
-                self.v_1_past = obj.vy_kmh
-            C_1 = x_diff
-            C_2 = v_diff
-            print(f"2 * C_1 {2 * C_1}")
-            self.k = 2 * (C_2 / (2 * C_1 + self.x_safe)) ** 2
-            print(self.k)
+    """Преследующий объект с управлением с обратной связью"""
+    def get_acceleration(self, obj: any, dt: float, a_max: float = 5, da_max: float = 1e40, noise: float = 0.1):
+        """Функция задания управляющего ускорения"""
+        x_1 = get_noise_distance(distance=obj.y_m + obj.front_and_back[1], sigma=noise)
+        if self.k is None:  # Определение параметров на первом шаге
+            self.x_1_past = x_1
+            self.x_2_past = self.x_1_past
+            self.a_1_past = 0.
+        v_1 = (x_1 - self.x_1_past) / dt
+        a_1 = (x_1 - 2*self.x_1_past + self.x_2_past) / dt
+        v_diff = v_1 - self.vy_kmh
+        safe_distance = self.x_safe  # + 0.2 * abs(v_1)  # Можно добавить динамическое расстояние преследования
+        x_diff = x_1 - (self.y_m + self.front_and_back[0]) - safe_distance
 
+        if self.k is None:  # Определение параметров на первом шаге
+            self.k = v_diff**2 / x_diff**2
+            print(f"{self.name}: k={self.k}")
         k_x = self.k
         k_v = 2 * np.sqrt(self.k)
-        a_front = (obj.vy_kmh - self.v_1_past) / dt
-        a = - k_x * x_diff - k_v * v_diff + a_front  # + clip(a_front, -1e1, 1e1)
-        self.v_1_past = obj.vy_kmh
+        a = self.a_1_past + clip(k_x * x_diff + k_v * v_diff + a_1 - self.a_1_past, -da_max*dt, da_max*dt)
+
+        self.x_2_past = self.x_1_past
+        self.x_1_past = x_1
+        self.a_1_past = a
         return [0, clip(a, -a_max, a_max)]
+        # return [0, clip(a, -2e1, a_max)]
 
 class Display:
     def __init__(self, len_road_meter: int):
@@ -114,7 +127,7 @@ class Display:
                            'z': np.array([0., 1.])}
 
 class Process:
-    def __init__(self, dt: float = 1., vy: float = 10, frames: int = 10, saving: bool = False):
+    def __init__(self, dt: float = 1., vy: float = 10, frames: int = 10, saving: bool = False, many_cars: bool = False):
         # Общие параметры
         self.saving = saving
         self.dt = dt
@@ -129,15 +142,20 @@ class Process:
 
         # Объекты
         self.front_car = FrontCar(self.d.images['cars'][0], self.d.images['icons'][1],
-                                  [int(NEWSIE[0]//2), int(NEWSIE[1]//2) + 20], x_m=0, y_m=2, vy=self.vy,
+                                  [int(NEWSIE[0]//2), int(NEWSIE[1]//2) + 20], x_m=0, y_m=5, vy=self.vy,
                                   front_and_back=[1.1, -1.1], color_point='cyan', name="Машина спереди")
         self.my_car = MyCar(self.d.images['cars'][1], self.d.images['icons'][0],
-                            [int(NEWSIE[0]//2), int(NEWSIE[1]//2) + 40], x_m=0, y_m=-1, vy=self.vy - 0.2,
+                            [int(NEWSIE[0]//2), int(NEWSIE[1]//2) + 40], x_m=0, y_m=1, vy=self.vy - 0.2,
                             front_and_back=[1., -1.], color_point='magenta', name="Грузовик")
         self.my_car_2 = MyCar(self.d.images['cars'][2], self.d.images['icons'][0], [256, 256 + 50],
                               x_m=0, y_m=-5, front_and_back=[1.8, -1.8], vy=self.vy - 0.4,
                               color_point='navy', name="Фура")
         self.objects = [self.front_car, self.my_car, self.my_car_2]
+        if many_cars:
+            self.many_cars = [MyCar(self.d.images['cars'][2], self.d.images['icons'][0], [256, 256 + 50],
+                              x_m=0, y_m=-9 - 5*i, front_and_back=[1.8, -1.8], vy=self.vy - 0.4,
+                              color_point='navy', name=f"Фура {i+2}") for i in range(10)]
+            self.objects += self.many_cars
 
     def add_lines(self, img):
         color = "#505050"
@@ -174,32 +192,30 @@ class Process:
             self.y = - i * v * self.dt
 
             # Процессы объектов
-            self.front_car.new_process(self.dt, self.t, self.vy)
-            self.my_car.process(dt=self.dt, a=self.my_car.get_acceleration(self.front_car))
-            self.my_car_2.process(dt=self.dt, a=self.my_car_2.get_acceleration(self.my_car))
-            # self.my_car.process(dt=self.dt)
-            # self.my_car_2.process(dt=self.dt)
+            for j in range(len(self.objects)):
+                if j == 0:
+                    self.objects[j].new_process(self.dt, self.t, self.vy)
+                else:
+                    self.objects[j].process(dt=self.dt,
+                                            a=self.objects[j].get_acceleration(self.objects[j-1], dt=self.dt))
 
             # Отображение
             if self.saving:
                 self.show().save(f"res/result_{self.counter:03}.jpg")
 
     def plot_process(self):
-        colors = ['navy', 'teal', 'aqua']
         for j in range(len(self.objects)):
-            t = [i * self.dt for i in range(len(self.objects[j].y_list))]
-            y = [self.objects[j].front_list[i] * (i % 2) + self.objects[j].back_list[i] * ((i+1) % 2)
-                 for i in range(len(self.objects[j].y_list))]
+            t = flatten([[i * self.dt] * 2 for i in range(len(self.objects[j].y_list))])
+            y = flatten([[self.objects[j].front_list[i], self.objects[j].back_list[i]]
+                         for i in range(len(self.objects[j].y_list))])
             plt.plot(t, y, label=self.objects[j].name)
-            # plt.plot(t, self.objects[j].y_list, label=self.objects[j].name, c=colors[j])
-            # plt.plot(t, self.objects[j].front_list, label=self.objects[j].name, c=colors[j])
-            # plt.plot(t, self.objects[j].back_list, c=colors[j])
+        plt.ylabel(f"Расстояние, м")
+        plt.xlabel(f"Время, с")
         plt.legend()
         plt.show()
 
 
 if __name__ == '__main__':
-    p = Process(frames=30000, dt=0.1, vy=1e0, saving=False)
-    # p.show().show()
+    p = Process(frames=500, dt=0.1, vy=10, saving=False, many_cars=True)
     p.process()
     p.plot_process()
