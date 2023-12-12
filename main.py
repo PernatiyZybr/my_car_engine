@@ -23,9 +23,10 @@ class Object:
         self.x_1_past = None
         self.x_2_past = None
         self.a_1_past = None
-        self.x_safe = 3.
+        self.x_safe = 1.5
 
         self.y_list = [y_m]
+        self.a_list = []
         self.front_list = [y_m + front_and_back[0]]
         self.back_list = [y_m + front_and_back[1]]
         self.x_m = x_m
@@ -74,7 +75,7 @@ class FrontCar(Object):
     """Единичный объект с заданным управлением"""
     def new_process(self, dt: float, t: float, v0):
         self.vx_kmh = 0.
-        self.vy_kmh = v0 + v0 * np.sin(t / 5.)
+        self.vy_kmh = v0 + v0 * np.sin(t / 1.)
         self.x_m += self.vx_kmh / 3.6 * dt
         self.y_m += self.vy_kmh / 3.6 * dt
         self.y_list += [self.y_m]
@@ -83,7 +84,7 @@ class FrontCar(Object):
 
 class MyCar(Object):
     """Преследующий объект с управлением с обратной связью"""
-    def get_acceleration(self, obj: any, dt: float, a_max: float = 5, da_max: float = 1e40, noise: float = 0.1):
+    def get_acceleration(self, obj: any, dt: float, a_max: float = 1e3, da_max: float = 1e20, noise: float = 0.01):
         """Функция задания управляющего ускорения"""
         x_1 = get_noise_distance(distance=obj.y_m + obj.front_and_back[1], sigma=noise)
         if self.k is None:  # Определение параметров на первом шаге
@@ -101,13 +102,14 @@ class MyCar(Object):
             print(f"{self.name}: k={self.k}")
         k_x = self.k
         k_v = 2 * np.sqrt(self.k)
-        a = self.a_1_past + clip(k_x * x_diff + k_v * v_diff + a_1 - self.a_1_past, -da_max*dt, da_max*dt)
+        a = self.a_1_past + clip(k_x * x_diff + k_v * v_diff - self.a_1_past, -da_max*dt, da_max*dt)
 
+        a = clip(a, -a_max, a_max)
+        self.a_1_past = a
+        self.a_list += [a]
         self.x_2_past = self.x_1_past
         self.x_1_past = x_1
-        self.a_1_past = a
-        return [0, clip(a, -a_max, a_max)]
-        # return [0, clip(a, -2e1, a_max)]
+        return [0, a]
 
 class Display:
     def __init__(self, len_road_meter: int):
@@ -214,8 +216,18 @@ class Process:
         plt.legend()
         plt.show()
 
+    def plot_acceleration(self):
+        for j in range(len(self.objects) - 1):
+            t = [i * self.dt for i in range(len(self.objects[j+1].a_list))]
+            plt.plot(t, self.objects[j+1].a_list)
+            plt.ylabel(f"Ускорение, м/c²")
+            plt.xlabel(f"Время, с")
+            plt.title(self.objects[j+1].name)
+            plt.show()
+
 
 if __name__ == '__main__':
-    p = Process(frames=500, dt=0.1, vy=10, saving=False, many_cars=True)
+    p = Process(frames=1000, dt=0.025, vy=10, saving=True, many_cars=False)
     p.process()
     p.plot_process()
+    # p.plot_acceleration()

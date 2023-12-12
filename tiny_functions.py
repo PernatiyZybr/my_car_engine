@@ -12,7 +12,7 @@ def get_noise_distance(distance: float, sigma: float):
 def clip(a, bot, top):
     """Функция ограничения переменной в заданных пределах"""
     if a < bot:
-        return bot
+        return float(bot)
     if a > top:
-        return top
-    return a
+        return float(top)
+    return float(a)
